@@ -50,6 +50,7 @@ struct sugov_tunables {
 	struct gov_attr_set attr_set;
 	unsigned int up_rate_limit_us;
 	unsigned int down_rate_limit_us;
+	unsigned int mode_rate_limit_us;
 };
 
 struct sugov_policy {
@@ -522,6 +523,13 @@ static ssize_t down_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 	return sprintf(buf, "%u\n", tunables->down_rate_limit_us);
 }
 
+static ssize_t mode_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return sprintf(buf, "%u\n", tunables->mode_rate_limit_us);
+}
+
 static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 				      const char *buf, size_t count)
 {
@@ -529,8 +537,12 @@ static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 	struct sugov_policy *sg_policy;
 	unsigned int rate_limit_us;
 
-	if (kstrtouint(buf, 10, &rate_limit_us))
-		return -EINVAL;
+	if(tunables->mode_rate_limit_us == 4) {
+		rate_limit_us = CONFIG_BLU_SCHEDUTIL_UP_RATE_LIMIT;
+	} else {
+		if (kstrtouint(buf, 10, &rate_limit_us))
+			return -EINVAL;
+	}
 
 	tunables->up_rate_limit_us = rate_limit_us;
 
@@ -549,8 +561,12 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 	struct sugov_policy *sg_policy;
 	unsigned int rate_limit_us;
 
-	if (kstrtouint(buf, 10, &rate_limit_us))
-		return -EINVAL;
+	if(tunables->mode_rate_limit_us == 4) {
+		rate_limit_us = CONFIG_BLU_SCHEDUTIL_DOWN_RATE_LIMIT;
+	} else {
+		if (kstrtouint(buf, 10, &rate_limit_us))
+			return -EINVAL;
+	}
 
 	tunables->down_rate_limit_us = rate_limit_us;
 
@@ -559,6 +575,40 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 		update_min_rate_limit_ns(sg_policy);
 	}
 
+	return count;
+}
+
+static ssize_t mode_rate_limit_us_store(struct gov_attr_set *attr_set,
+					const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	struct sugov_policy *sg_policy;
+	unsigned int mode_rate_limit_us;
+
+	if (kstrtouint(buf, 10, &mode_rate_limit_us))
+		return -EINVAL;
+
+	if (mode_rate_limit_us >= 5 ){
+		mode_rate_limit_us = 0;
+	}
+	tunables->mode_rate_limit_us = mode_rate_limit_us;
+	if (mode_rate_limit_us == 4){
+		// same as defined
+		tunables->down_rate_limit_us = CONFIG_BLU_SCHEDUTIL_DOWN_RATE_LIMIT;
+		tunables->up_rate_limit_us = CONFIG_BLU_SCHEDUTIL_UP_RATE_LIMIT;
+	} else if (mode_rate_limit_us == 1) {
+		// battery
+		tunables->down_rate_limit_us = 1000;
+		tunables->up_rate_limit_us = 40000;
+	} else if (mode_rate_limit_us == 2) {
+		// balance
+		tunables->down_rate_limit_us = 1000;
+		tunables->up_rate_limit_us = 10000;
+	} else if (mode_rate_limit_us == 3) {
+		// performance
+		tunables->down_rate_limit_us = 60000;
+		tunables->up_rate_limit_us = 100;
+	}
 	return count;
 }
 
@@ -585,6 +635,9 @@ int blu_schedutil_set_down_rate_limit_us(int cpu, unsigned int rate_limit_us)
 	}
 
 	tunables = sg_policy->tunables;
+	if(tunables->mode_rate_limit_us == 4) {
+		rate_limit_us = CONFIG_BLU_SCHEDUTIL_DOWN_RATE_LIMIT;
+	}
 	tunables->down_rate_limit_us = rate_limit_us;
 	attr_set = &tunables->attr_set;
 
@@ -625,6 +678,9 @@ int blu_schedutil_set_up_rate_limit_us(int cpu, unsigned int rate_limit_us)
 	}
 
 	tunables = sg_policy->tunables;
+	if(tunables->mode_rate_limit_us == 4) {
+		rate_limit_us = CONFIG_BLU_SCHEDUTIL_UP_RATE_LIMIT;
+	}
 	tunables->up_rate_limit_us = rate_limit_us;
 	attr_set = &tunables->attr_set;
 
@@ -644,10 +700,12 @@ EXPORT_SYMBOL(blu_schedutil_set_up_rate_limit_us);
 
 static struct governor_attr up_rate_limit_us = __ATTR_RW(up_rate_limit_us);
 static struct governor_attr down_rate_limit_us = __ATTR_RW(down_rate_limit_us);
+static struct governor_attr mode_rate_limit_us = __ATTR_RW(mode_rate_limit_us);
 
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
+	&mode_rate_limit_us.attr,
 	NULL
 };
 
@@ -795,13 +853,10 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->up_rate_limit_us = LATENCY_MULTIPLIER;
-	tunables->down_rate_limit_us = LATENCY_MULTIPLIER;
-	lat = policy->cpuinfo.transition_latency / NSEC_PER_USEC;
-	if (lat) {
-		tunables->up_rate_limit_us *= lat;
-		tunables->down_rate_limit_us *= lat;
-	}
+	tunables->up_rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+	tunables->down_rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+	// dont lock rate limit by default
+	tunables->mode_rate_limit_us = 0;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
