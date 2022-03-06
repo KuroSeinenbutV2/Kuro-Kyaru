@@ -606,8 +606,8 @@ static ssize_t mode_rate_limit_us_store(struct gov_attr_set *attr_set,
 		tunables->up_rate_limit_us = 10000;
 	} else if (mode_rate_limit_us == 3) {
 		// performance
-		tunables->down_rate_limit_us = 60000;
-		tunables->up_rate_limit_us = 100;
+		tunables->down_rate_limit_us = 80000;
+		tunables->up_rate_limit_us = 800;
 	}
 	return count;
 }
